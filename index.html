@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="sv"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Värmen">
+<meta name="theme-color" content="#000000">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<title>Värmen</title>
+<style>
+/* Same look as the ESP32 display: black, one big green number, icons instead of labels */
+:root{--bg:#000;--card:#111214;--line:#24262b;--fg:#f2f3f5;--dim:#8a8f98;--in:#50e178;--out:#78c8ff;--min:#5aaaff;--max:#ff8a3c;--warn:#ff5a46}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--fg);font:16px -apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;-webkit-text-size-adjust:100%}
+main{max-width:480px;margin:auto;padding:calc(env(safe-area-inset-top) + 12px) 16px calc(env(safe-area-inset-bottom) + 20px)}
+.top{display:flex;justify-content:space-between;align-items:center;color:var(--dim);font-size:14px}
+.dot{width:10px;height:10px;border-radius:50%;background:var(--dim);display:inline-block;margin-left:6px;vertical-align:middle}
+.hero{text-align:center;margin:18px 0 6px}
+.hero svg{width:30px;height:30px}
+.big{font-size:min(34vw,170px);font-weight:600;line-height:.95;color:var(--in);letter-spacing:-.04em;font-variant-numeric:tabular-nums}
+.big small{font-size:.38em;vertical-align:.95em;letter-spacing:0;margin-left:.04em}
+.set{display:inline-flex;align-items:center;gap:8px;color:var(--dim);font-size:20px;margin-top:6px}
+.state{text-align:center;color:var(--dim);margin:10px 0 18px;font-size:15px}
+.cards{display:grid;gap:12px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:14px 16px;display:flex;align-items:center;gap:14px}
+.card svg.icon{width:46px;height:46px;flex:none}
+.card .val{font-size:34px;font-weight:600;font-variant-numeric:tabular-nums}
+.card .sub{color:var(--dim);font-size:14px;margin-top:2px}
+.mm{display:flex;gap:14px;font-size:17px;font-variant-numeric:tabular-nums;margin-left:auto;text-align:right;flex-direction:column}
+.mm span{white-space:nowrap}
+.mm .lo::before{content:"▼ ";color:var(--min);font-size:.8em}
+.mm .hi::before{content:"▲ ";color:var(--max);font-size:.8em}
+.foot{text-align:center;margin-top:22px;font-size:13px}
+.foot a{color:var(--dim);text-decoration:none}
+.stale .big,.stale .card .val{color:var(--dim)}
+</style></head><body><main id="app">
+<div class="top"><span id="clock">--:--</span><span id="status">Hämtar…<i class="dot" id="dot"></i></span></div>
+
+<div class="hero">
+  <svg viewBox="0 0 24 24" aria-label="Inne"><path fill="var(--in)" d="M12 3 2 11h3v9h5v-6h4v6h5v-9h3z"/></svg>
+  <div class="big" id="in">--</div>
+  <div class="set" aria-label="Inställd temperatur">
+    <svg width="20" height="20" viewBox="0 0 20 20"><circle cx="10" cy="10" r="8.5" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="10" cy="10" r="4.5" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="10" cy="10" r="1.4" fill="currentColor"/></svg>
+    <span id="set">--</span>
+  </div>
+</div>
+<div class="state" id="state"></div>
+
+<div class="cards">
+  <div class="card">
+    <svg class="icon" id="wx" viewBox="0 0 48 48"></svg>
+    <div><div class="val" id="out" style="color:var(--out)">--</div><div class="sub" id="wxtext">Ute</div></div>
+    <div class="mm"><span class="lo" id="outlo">--</span><span class="hi" id="outhi">--</span></div>
+  </div>
+  <div class="card">
+    <svg class="icon" viewBox="0 0 24 24"><path fill="var(--dim)" d="M12 3 2 11h3v9h5v-6h4v6h5v-9h3z"/></svg>
+    <div><div class="val" id="in2">--</div><div class="sub">Inne idag</div></div>
+    <div class="mm"><span class="lo" id="inlo">--</span><span class="hi" id="inhi">--</span></div>
+  </div>
+  <div class="card">
+    <svg class="icon" viewBox="0 0 24 24"><path fill="#ff8a3c" d="M12 2c3 4.2 6 7.6 6 11.3A6 6 0 0 1 6 13.3C6 9.6 9 6.2 12 2z"/><path fill="#000" opacity=".25" d="M9 14a3 3 0 0 0 3 3v2a5 5 0 0 1-5-5z"/></svg>
+    <div><div class="val" id="hw">--</div><div class="sub" id="hwtext">Varmvatten</div></div>
+  </div>
+</div>
+
+<div class="foot" id="foot"><a href="/avancerat">Avancerat ›</a></div>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+
+// Data source: served by the Pi → its /json. Served elsewhere (GitHub Pages,
+// for when you're away) → the Google Apps Script relay; the link carries it
+// in the fragment: #u=<script id>&k=<read key> (never in the page code).
+const P = new URLSearchParams(location.hash.slice(1));
+const CLOUD = P.get('u') && P.get('k')
+  ? `https://script.google.com/macros/s/${encodeURIComponent(P.get('u'))}/exec?k=${encodeURIComponent(P.get('k'))}`
+  : null;
+const AWAY = location.protocol === 'https:';
+const SRC = AWAY ? CLOUD : '/json';
+const STALE_MS = 5 * 60 * 1000;
+if (AWAY) $('foot').innerHTML = '<span style="color:var(--dim)">Bara visning – styr värmen hemma</span>';
+const t = v => v == null ? '--' : v.toFixed(1).replace('.', ',') + '°';
+const val = (d, id) => { const r = d.values.find(x => x.id === id); return r ? r.value : null; };
+
+// WMO weather code -> [icon, Swedish text] (same grouping as weather_icons.h on the display)
+function weather(code, day) {
+  if (code === 0) return [day ? 'sun' : 'moon', 'Klart'];
+  if (code <= 2) return [day ? 'partly' : 'partlynight', 'Halvklart'];
+  if (code === 3) return ['cloud', 'Mulet'];
+  if (code === 45 || code === 48) return ['fog', 'Dimma'];
+  if (code >= 51 && code <= 55) return ['drizzle', 'Duggregn'];
+  if ([56, 57, 66, 67].includes(code)) return ['sleet', 'Underkylt regn'];
+  if ((code >= 61 && code <= 65) || (code >= 80 && code <= 82)) return ['rain', 'Regn'];
+  if ((code >= 71 && code <= 77) || code === 85 || code === 86) return ['snow', 'Snö'];
+  if (code >= 95) return ['thunder', 'Åska'];
+  return ['cloud', ''];
+}
+const SUN = '<circle cx="24" cy="24" r="9" fill="#ffc800"/><g stroke="#ffc800" stroke-width="3" stroke-linecap="round">' +
+  [0,45,90,135,180,225,270,315].map(a => `<line x1="24" y1="5" x2="24" y2="9" transform="rotate(${a} 24 24)"/>`).join('') + '</g>';
+const CLOUD = (fill, y = 0) => `<path transform="translate(0 ${y})" fill="${fill}" stroke="#111214" stroke-width="2" d="M14 38h22a8 8 0 0 0 .6-16A11 11 0 0 0 15.5 25 6.5 6.5 0 0 0 14 38z"/>`;
+const ICONS = {
+  sun: SUN,
+  moon: '<path fill="#ebe1aa" d="M30 8a16 16 0 1 0 10 27A13 13 0 0 1 30 8z"/>',
+  partly: `<g transform="translate(8 -6) scale(.75)">${SUN}</g>` + CLOUD('#dce1eb', 2),
+  partlynight: '<path transform="translate(14 -4) scale(.6)" fill="#ebe1aa" d="M30 8a16 16 0 1 0 10 27A13 13 0 0 1 30 8z"/>' + CLOUD('#dce1eb', 2),
+  cloud: CLOUD('#828c9b', -6) + CLOUD('#dce1eb', 2),
+  fog: '<g stroke="#b4bac4" stroke-width="3" stroke-linecap="round"><line x1="8" y1="16" x2="40" y2="16"/><line x1="4" y1="24" x2="36" y2="24"/><line x1="10" y1="32" x2="42" y2="32"/></g>',
+  drizzle: CLOUD('#b4bac4', -6) + '<g stroke="#3c96ff" stroke-width="2.5" stroke-linecap="round"><line x1="17" y1="38" x2="16" y2="41"/><line x1="25" y1="38" x2="24" y2="41"/><line x1="33" y1="38" x2="32" y2="41"/></g>',
+  rain: CLOUD('#828c9b', -6) + '<g stroke="#3c96ff" stroke-width="3" stroke-linecap="round"><line x1="17" y1="36" x2="14" y2="44"/><line x1="25" y1="36" x2="22" y2="44"/><line x1="33" y1="36" x2="30" y2="44"/></g>',
+  sleet: CLOUD('#828c9b', -6) + '<g stroke="#3c96ff" stroke-width="3" stroke-linecap="round"><line x1="17" y1="36" x2="14" y2="44"/><line x1="33" y1="36" x2="30" y2="44"/></g><circle cx="24" cy="41" r="2.5" fill="#fff"/>',
+  snow: CLOUD('#dce1eb', -6) + '<g fill="#fff"><circle cx="16" cy="40" r="2.5"/><circle cx="24" cy="44" r="2.5"/><circle cx="32" cy="40" r="2.5"/></g>',
+  thunder: CLOUD('#5f6473', -6) + '<path fill="#ffdc00" d="M25 32h-6l-3 9h5l-2 7 9-11h-5z"/>',
+};
+
+function stateText(comp, prio) {
+  if (comp === 60 || comp === 40) return prio === 20 ? 'Värmepumpen värmer varmvatten' : 'Värmepumpen värmer huset';
+  if (comp === 100) return 'Värmepumpen stannar';
+  return 'Värmepumpen vilar';
+}
+
+function offline(text) {
+  $('status').firstChild.textContent = text;
+  $('dot').style.background = 'var(--warn)';
+  $('app').classList.add('stale');
+}
+
+async function load() {
+  if (!SRC) return offline('Länken saknar nyckel ');
+  let d;
+  try {
+    const r = await fetch(SRC, {cache: 'no-store'});
+    d = await r.json();
+    if (d.ok === false || !d.values) throw new Error(d.error || 'tomt');
+  } catch (e) {
+    $('status').firstChild.textContent = 'Ingen kontakt';
+    $('dot').style.background = 'var(--warn)';
+    $('app').classList.add('stale');
+    return;
+  }
+  const hhmm = t => t.toLocaleTimeString('sv-SE', {hour: '2-digit', minute: '2-digit'});
+  const at = d.time ? new Date(d.time) : new Date();
+  const old = Date.now() - at.getTime() > STALE_MS;
+  $('app').classList.toggle('stale', old);
+  $('clock').textContent = hhmm(new Date());
+  $('status').firstChild.textContent = !d.pump ? 'Pumpen svarar inte ' : (AWAY || old ? `Uppdaterad ${hhmm(at)} ` : 'Uppdaterad ');
+  $('dot').style.background = !d.pump || old ? 'var(--warn)' : '#3cc85a';
+
+  const inside = val(d, 40033), out = val(d, 40004);
+  if (inside == null) $('in').textContent = '--';
+  else {
+    const [w, f] = inside.toFixed(1).split('.');
+    $('in').innerHTML = `${w}<small>,${f}°</small>`;
+  }
+  $('in2').textContent = t(inside);
+  $('set').textContent = t(val(d, 47398));
+  $('out').textContent = t(out);
+  $('hw').textContent = t(val(d, 40013));
+  $('state').textContent = stateText(val(d, 43427), val(d, 43086));
+
+  const today = (d.daily && d.daily.today) || {};
+  $('inlo').textContent = t(today.indoor && today.indoor.min);
+  $('inhi').textContent = t(today.indoor && today.indoor.max);
+  $('outlo').textContent = t(today.outdoor && today.outdoor.min);
+  $('outhi').textContent = t(today.outdoor && today.outdoor.max);
+
+  if (d.weather) {
+    const [icon, text] = weather(d.weather.code, d.weather.isDay);
+    $('wx').innerHTML = ICONS[icon];
+    $('wxtext').textContent = text || 'Ute';
+  } else {
+    $('wx').innerHTML = ICONS.partly;
+    $('wxtext').textContent = 'Ute';
+  }
+}
+load();
+setInterval(load, 15000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) load(); });
+</script></body></html>
