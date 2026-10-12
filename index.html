@@ -72,7 +72,13 @@ const $ = id => document.getElementById(id);
 // Data source: served by the Pi → its /json. Served elsewhere (GitHub Pages,
 // for when you're away) → the Google Apps Script relay; the link carries it
 // in the fragment: #u=<script id>&k=<read key> (never in the page code).
-const P = new URLSearchParams(location.hash.slice(1));
+// The first visit with the full link remembers it, so the short address
+// works afterwards on the same device.
+let P = new URLSearchParams(location.hash.slice(1));
+try {
+  if (P.get('u') && P.get('k')) localStorage.setItem('varmen', P.toString());
+  else if (localStorage.getItem('varmen')) P = new URLSearchParams(localStorage.getItem('varmen'));
+} catch (e) { /* private mode: only the full link works */ }
 const RELAY = P.get('u') && P.get('k')
   ? `https://script.google.com/macros/s/${encodeURIComponent(P.get('u'))}/exec?k=${encodeURIComponent(P.get('k'))}`
   : null;
@@ -126,7 +132,7 @@ function offline(text) {
 }
 
 async function load() {
-  if (!SRC) return offline('Länken saknar nyckel ');
+  if (!SRC) return offline('Öppna hela länken (med #) en gång ');
   let d;
   try {
     const r = await fetch(SRC, {cache: 'no-store'});
