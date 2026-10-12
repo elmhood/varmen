@@ -73,11 +73,11 @@ const $ = id => document.getElementById(id);
 // for when you're away) → the Google Apps Script relay; the link carries it
 // in the fragment: #u=<script id>&k=<read key> (never in the page code).
 const P = new URLSearchParams(location.hash.slice(1));
-const CLOUD = P.get('u') && P.get('k')
+const RELAY = P.get('u') && P.get('k')
   ? `https://script.google.com/macros/s/${encodeURIComponent(P.get('u'))}/exec?k=${encodeURIComponent(P.get('k'))}`
   : null;
 const AWAY = location.protocol === 'https:';
-const SRC = AWAY ? CLOUD : '/json';
+const SRC = AWAY ? RELAY : '/json';
 const STALE_MS = 5 * 60 * 1000;
 if (AWAY) $('foot').innerHTML = '<span style="color:var(--dim)">Bara visning – styr värmen hemma</span>';
 const t = v => v == null ? '--' : v.toFixed(1).replace('.', ',') + '°';
