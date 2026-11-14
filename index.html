@@ -28,7 +28,15 @@ main{max-width:480px;margin:auto;padding:calc(env(safe-area-inset-top) + 12px) 1
 .card .val{font-size:34px;font-weight:600;font-variant-numeric:tabular-nums}
 .card .sub{color:var(--dim);font-size:14px;margin-top:2px}
 .card.wrap{flex-wrap:wrap}
-.chart{width:100%;height:56px;display:block;margin-top:4px}
+.chart{width:100%;height:90px;display:block;margin-top:6px;touch-action:pan-y;cursor:crosshair}
+.axis{position:relative;width:100%;height:16px;font-size:11px;color:var(--dim)}
+.axis span{position:absolute;transform:translateX(-50%)}
+.pinfo{width:100%;min-height:20px;font-size:14px;color:var(--fg);font-variant-numeric:tabular-nums;margin-top:4px}
+.pbtns{width:100%;display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.pbtns button{font:inherit;font-size:15px;padding:9px 14px;border-radius:12px;border:1px solid var(--line);background:#1b1d21;color:var(--fg)}
+.pbtns button.go{background:#123a22;border-color:#2c7a46;color:#bff5cf}
+.pbtns button.no{color:var(--dim)}
+.boostlist{width:100%;font-size:13px;color:#8fc4ff;margin-top:6px}
 .mm{display:flex;gap:14px;font-size:17px;font-variant-numeric:tabular-nums;margin-left:auto;text-align:right;flex-direction:column}
 .mm span{white-space:nowrap}
 .mm .lo::before{content:"▼ ";color:var(--min);font-size:.8em}
@@ -68,6 +76,10 @@ main{max-width:480px;margin:auto;padding:calc(env(safe-area-inset-top) + 12px) 1
     <svg class="icon" viewBox="0 0 24 24"><path fill="#ffdc00" d="M13 2 4 14h6l-1 8 9-12h-6z"/></svg>
     <div><div class="val" id="pnow">--</div><div class="sub" id="ptext">Elpris</div></div>
     <svg class="chart" id="pchart" preserveAspectRatio="none"></svg>
+    <div class="axis" id="paxis"></div>
+    <div class="pinfo" id="pinfo">Peka eller dra över staplarna för att se priset. Dra över en period för att värma extra då.</div>
+    <div class="pbtns" id="pbtns" hidden></div>
+    <div class="boostlist" id="pboosts"></div>
   </div>
 </div>
 
@@ -139,32 +151,134 @@ function offline(text) {
 }
 
 // Electricity price card: today's quarter-hour prices (+ tomorrow when known),
-// cheap green / expensive orange, the current quarter in white.
+// cheap green / expensive orange, the current quarter white, "värm extra" in blue.
+// Point or drag over the bars to read a price; drag over a period to pick it
+// for extra heat (home only: /boost on the Pi, limited there to +2 / 8 h / 23 °C).
+let PR = null, SEL = null, DRAG = null;
+const fmtKr = v => v.toFixed(2).replace('.', ',') + ' kr';
+const hm = d => d.toLocaleTimeString('sv-SE', {hour: '2-digit', minute: '2-digit'});
+const qTime = i => new Date(new Date(PR.prices.start).getTime() + i * 900000);
+function dayLabel(d) {
+  const t = new Date(); t.setHours(0, 0, 0, 0);
+  const diff = Math.round((new Date(d).setHours(0, 0, 0, 0) - t) / 86400000);
+  return diff === 0 ? 'idag' : diff === 1 ? 'imorgon' : d.toLocaleDateString('sv-SE');
+}
+
 function showPrice(p) {
   if (!p || !p.enabled) { $('pcard').hidden = true; return; }
   $('pcard').hidden = false;
-  $('pnow').textContent = p.price == null ? '--' : p.price.toFixed(2).replace('.', ',') + ' kr';
+  PR = p;
+  $('pnow').textContent = p.price == null ? '--' : fmtKr(p.price);
   $('ptext').textContent = p.price == null ? 'Elpris (väntar på priser)' : 'Elpris nu · ' + p.reason;
-  const sek = (p.prices && p.prices.sek) || [];
+  drawChart();
+  const bl = (p.boosts || []).map(([a, b]) => `${dayLabel(new Date(a))} ${hm(new Date(a))}–${hm(new Date(b))}`);
+  $('pboosts').innerHTML = bl.length ? '<b>Värm extra:</b> ' + bl.join(', ') : '';
+  if (!SEL && !DRAG) showButtons();
+}
+
+function inBoost(t) {
+  return (PR.boosts || []).some(([a, b]) => t >= new Date(a) && t < new Date(b));
+}
+
+function drawChart() {
+  const sek = (PR.prices && PR.prices.sek) || [];
   const known = sek.filter(x => x != null);
-  if (!known.length) { $('pchart').innerHTML = ''; return; }
+  if (!known.length) { $('pchart').innerHTML = ''; $('paxis').innerHTML = ''; return; }
   const lo = Math.min(...known), hi = Math.max(...known), n = sek.length;
-  const t0 = new Date(p.prices.start).getTime();
-  const nowIdx = Math.floor((Date.now() - t0) / 900000);
+  const nowIdx = Math.floor((Date.now() - new Date(PR.prices.start).getTime()) / 900000);
   const sorted = [...known].sort((a, b) => a - b);
   const q = f => sorted[Math.floor(f * (sorted.length - 1))];
   const cheap = q(0.3), dear = q(0.7);
-  let bars = '';
+  let g = '';
+  if (SEL) g += `<rect x="${SEL[0]}" y="0" width="${SEL[1] - SEL[0] + 1}" height="90" fill="#2c7a46" opacity=".35"/>`;
   sek.forEach((v, i) => {
     if (v == null) return;
-    const h = 8 + 48 * (hi > lo ? (v - lo) / (hi - lo) : 0.5);
+    const h = 10 + 72 * (hi > lo ? (v - lo) / (hi - lo) : 0.5);
     const col = i === nowIdx ? '#fff' : v <= cheap ? '#3cc85a' : v >= dear ? '#ff8a3c' : '#5a5f68';
-    bars += `<rect x="${i}" y="${56 - h}" width="0.8" height="${h}" fill="${col}"/>`;
+    g += `<rect x="${i + 0.1}" y="${86 - h}" width="0.8" height="${h}" fill="${col}"${i < nowIdx ? ' opacity=".45"' : ''}/>`;
+    if (inBoost(qTime(i))) g += `<rect x="${i}" y="86" width="1" height="4" fill="#5aaaff"/>`;
   });
-  if (n > 96) bars += '<line x1="96" y1="0" x2="96" y2="56" stroke="#24262b" stroke-width="0.4"/>';
-  $('pchart').setAttribute('viewBox', `0 0 ${n} 56`);
-  $('pchart').innerHTML = bars;
+  if (n > 96) g += '<line x1="96" y1="0" x2="96" y2="90" stroke="#3a3d44" stroke-width="0.5"/>';
+  if (PR._hover != null) g += `<line x1="${PR._hover + 0.5}" y1="0" x2="${PR._hover + 0.5}" y2="90" stroke="#fff" stroke-width="0.35"/>`;
+  $('pchart').setAttribute('viewBox', `0 0 ${n} 90`);
+  $('pchart').innerHTML = g;
+  let ax = '';
+  for (let i = 0; i < n; i += 24) {
+    const lbl = i === 96 ? 'imorgon' : String((i / 4) % 24).padStart(2, '0');
+    ax += `<span style="left:${(i / n) * 100}%">${i === 0 ? '' : lbl}</span>`;
+  }
+  $('paxis').innerHTML = ax;
 }
+
+function idxAt(ev) {
+  const r = $('pchart').getBoundingClientRect(), n = PR.prices.sek.length;
+  return Math.max(0, Math.min(n - 1, Math.floor((ev.clientX - r.left) / r.width * n)));
+}
+
+function showInfo(i) {
+  const v = PR.prices.sek[i];
+  if (v == null) return;
+  const t = qTime(i);
+  $('pinfo').textContent = `${dayLabel(t)} ${hm(t)}–${hm(new Date(t.getTime() + 900000))} · ${fmtKr(v)}/kWh`;
+}
+
+function showSelection() {
+  const [a, b] = SEL, vals = PR.prices.sek.slice(a, b + 1).filter(x => x != null);
+  const avg = vals.reduce((s, x) => s + x, 0) / Math.max(1, vals.length);
+  const t0 = qTime(a), t1 = new Date(qTime(b).getTime() + 900000);
+  $('pinfo').textContent = `${dayLabel(t0)} ${hm(t0)}–${hm(t1)} · snitt ${fmtKr(avg)}/kWh`;
+  showButtons();
+}
+
+function showButtons() {
+  const box = $('pbtns');
+  if (AWAY) { box.hidden = true; return; }       // away: view only
+  box.hidden = false;
+  if (SEL) {
+    box.innerHTML = '<button class="go" id="bgo">Värm extra då</button><button class="no" id="bno">Avbryt</button>';
+    $('bgo').onclick = () => boost({action: 'add', start: qTime(SEL[0]).toISOString(),
+                                    end: new Date(qTime(SEL[1]).getTime() + 900000).toISOString()});
+    $('bno').onclick = () => { SEL = null; drawChart(); showButtons(); };
+  } else {
+    box.innerHTML = '<button class="go" id="bnow">Värm extra nu (2 h)</button>' +
+      ((PR.boosts || []).length ? '<button class="no" id="bclr">Ta bort extra värme</button>' : '');
+    $('bnow').onclick = () => boost({action: 'now', hours: 2});
+    if ($('bclr')) $('bclr').onclick = () => boost({action: 'clear'});
+  }
+}
+
+async function boost(params) {
+  $('pinfo').textContent = 'Skickar…';
+  try {
+    const r = await fetch('/boost', {method: 'POST', body: new URLSearchParams(params)});
+    const d = await r.json();
+    $('pinfo').textContent = d.ok ? 'Klart – pumpen värmer extra under vald tid.' : 'Gick inte: ' + d.error;
+    if (d.ok) { PR.boosts = d.boosts; SEL = null; drawChart(); showPrice(PR); }
+  } catch (e) { $('pinfo').textContent = 'Ingen kontakt med Pi:n'; }
+}
+
+const chart = document.getElementById('pchart');
+chart.addEventListener('pointerdown', ev => {
+  if (!PR) return;
+  DRAG = idxAt(ev); SEL = null; PR._hover = DRAG; showInfo(DRAG); drawChart();
+});
+chart.addEventListener('pointermove', ev => {
+  if (!PR) return;
+  const i = idxAt(ev); PR._hover = i;
+  if (DRAG != null && Math.abs(i - DRAG) >= 1) { SEL = [Math.min(i, DRAG), Math.max(i, DRAG)]; showSelection(); }
+  else showInfo(i);
+  drawChart();
+});
+const endDrag = () => {
+  if (DRAG == null) return;
+  DRAG = null;
+  if (PR) { PR._hover = null; drawChart(); }
+  if (SEL && SEL[1] - SEL[0] < 1) SEL = null;
+  showButtons();
+};
+chart.addEventListener('pointerup', endDrag);
+chart.addEventListener('pointercancel', endDrag);
+chart.addEventListener('pointerleave', () => { if (DRAG == null && PR) { PR._hover = null; drawChart(); } });
 
 async function load() {
   if (!SRC) return offline('Öppna hela länken (med #) en gång ');
